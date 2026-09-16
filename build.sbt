@@ -24,10 +24,14 @@ def isFatJarOrBundle(c: String): Boolean =
 lazy val snowparkName = s"snowpark${if (isFipsRelease) "-fips" else ""}"
 lazy val jdbcName = s"snowflake-jdbc${if (isFipsRelease) "-fips" else ""}"
 
+// This is a Snowpark release-build setting, not an end-user runtime option. Builds that do not
+// provide the POC override must continue to resolve a deterministic stock JDBC version.
+val defaultJdbcVersion = "3.27.1"
+
 // POC build properties: both must be supplied together via -Dsproc.jdbc.version and
-// -Dsproc.snowpark.version.  When absent the build behaves identically to the stock build.
+// -Dsproc.snowpark.version. When absent the build behaves identically to the stock build.
 val pocJdbcVersion: Option[String] = sys.props.get("sproc.jdbc.version")
-val jdbcVersion: String = pocJdbcVersion.getOrElse("3.27.1")
+val jdbcVersion: String = pocJdbcVersion.getOrElse(defaultJdbcVersion)
 val isPocJdbc4Build: Boolean = pocJdbcVersion.isDefined
 
 // Allow the synthetic Snowpark version to be overridden by -Dsproc.snowpark.version.
