@@ -24,7 +24,6 @@ import com.snowflake.snowpark.internal.Utils.{
 }
 import net.snowflake.client.api.driver.SnowflakeDriver
 import net.snowflake.client.api.exception.SnowflakeSQLException
-import net.snowflake.client.internal.api.implementation.connection.SnowflakeConnectionImpl
 
 import scala.concurrent.{ExecutionContext, Future}
 import scala.collection.JavaConverters._
@@ -1479,33 +1478,25 @@ object Session extends Logging {
   }
 
   /**
-   * This api is for Stored Procedure internal usage only. Do not create a Session with this api.
+   * JDBC 4.x stored-procedure entry point. The JNI descriptor uses [[java.sql.Connection]]
+   * exclusively, making it stable across JDBC major versions and independent of any concrete JDBC
+   * implementation class name.
    *
+   * <p>No cast to a concrete class is performed here. The [[ServerConnection]] constructor unwraps
+   * the connection to [[net.snowflake.client.api.connection.SnowflakeConnection]] via
+   * {@code connection.unwrap(classOf[SnowflakeConnection])} exactly once at the boundary.
+   *
+   * <p>JNI descriptor: {@code (Ljava/sql/Connection;)Lcom/snowflake/snowpark/Session;}
+   *
+   * @param connection
+   *   Non-null [[java.sql.Connection]] that wraps a live Snowflake session; must be a wrapper for
+   *   [[net.snowflake.client.api.connection.SnowflakeConnection]].
    * @return
-   *   [[Session]]
-   */
-  private[snowpark] def apply(connection: SnowflakeConnectionImpl): Session = {
-    Session.builder.createInternal(Some(connection))
-  }
-
-  /**
-   * JDBC 4.x stored-procedure entry point whose JNI descriptor uses [[java.sql.Connection]] rather
-   * than any concrete JDBC class, making it safe to invoke from a JNI method-descriptor that
-   * targets only stable standard types.
-   *
-   * Internally casts to [[SnowflakeConnectionImpl]] which is the only concrete type returned by
-   * [[net.snowflake.client.internal.jdbc.sproc.StoredProcConnectionFactory.fromHandler]].
-   *
-   * JNI descriptor: (Ljava/sql/Connection;)Lcom/snowflake/snowpark/Session;
+   *   A fully initialised stored-procedure [[Session]].
    */
   private[snowpark] def apply(connection: java.sql.Connection): Session = {
-    connection match {
-      case impl: SnowflakeConnectionImpl => Session.builder.createInternal(Some(impl))
-      case other =>
-        throw new IllegalArgumentException(
-          s"[POC] Session.apply(Connection): expected SnowflakeConnectionImpl, " +
-            s"got ${other.getClass.getName}")
-    }
+    require(connection != null, "connection must not be null")
+    Session.builder.createInternal(Some(connection))
   }
 
   private[snowpark] def loadConfFromFile(configFile: String): Map[String, String] = {
@@ -1719,7 +1710,7 @@ object Session extends Logging {
       Session.getActiveSession.getOrElse(create)
     }
 
-    private[snowpark] def createInternal(conn: Option[SnowflakeConnectionImpl]): Session = {
+    private[snowpark] def createInternal(conn: Option[java.sql.Connection]): Session = {
       conn match {
         case Some(_) =>
           setActiveSession(new Session(new ServerConnection(Map.empty, isScalaAPI, conn)))

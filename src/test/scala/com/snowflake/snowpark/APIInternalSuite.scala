@@ -15,6 +15,7 @@ import com.snowflake.snowpark.internal.analyzer.{
   schemaValueStatement
 }
 import com.snowflake.snowpark.types._
+import net.snowflake.client.internal.api.implementation.connection.SnowflakeConnectionImpl
 import net.snowflake.client.internal.core.SFSessionProperty
 import net.snowflake.client.api.exception.SnowflakeSQLException
 
@@ -297,7 +298,10 @@ class APIInternalSuite extends TestData {
    */
   test("Test that all params are correctly propagated to JDBC session") {
     val session2 = Session.builder.configFile(defaultProfile).config("ROLE", "PUBLIC").create
-    val jdbcSession = session2.conn.connection.getSFBaseSession
+    // connection is now java.sql.Connection; unwrap to impl for this non-sproc integration test
+    val jdbcSession = session2.conn.connection
+      .unwrap(classOf[SnowflakeConnectionImpl])
+      .getSFBaseSession
     val propertySet = jdbcSession.getConnectionPropertiesMap.keySet()
     assert(propertySet.contains(SFSessionProperty.DATABASE))
     assert(propertySet.contains(SFSessionProperty.SCHEMA))

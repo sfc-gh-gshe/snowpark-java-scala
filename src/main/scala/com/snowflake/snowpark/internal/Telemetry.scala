@@ -2,13 +2,23 @@ package com.snowflake.snowpark.internal
 
 import com.snowflake.snowpark.SnowparkClientException
 import net.snowflake.client.jdbc.internal.fasterxml.jackson.databind.{JsonNode, ObjectMapper}
-import net.snowflake.client.internal.jdbc.telemetry.TelemetryUtil
 import Telemetry._
 
+/**
+ * Snowpark telemetry wrapper.
+ *
+ * Telemetry events are submitted via [[ServerConnection.sfConn]].submitTelemetry, which delegates
+ * to the stable [[net.snowflake.client.api.connection.SnowflakeConnection]] public interface. This
+ * replaces the previous pattern of calling
+ * {{{conn.connection.getSFBaseSession.getTelemetryClient}}} and therefore removes the dependency on
+ * the internal {@code SFBaseSession} and the internal {@code TelemetryUtil} classes from the
+ * stored-procedure connection path.
+ *
+ * The implementation is best-effort and fire-and-forget: failures are logged but not propagated.
+ * For Java stored procedures the JDBC runtime returns a NoOpTelemetryClient behind
+ * {@code submitTelemetry} , so this class is safely no-op in that context.
+ */
 final class Telemetry(conn: ServerConnection) extends Logging {
-
-  // Get telemetry client from JDBC. Will return NoOpTelemetryClient for Java SP.
-  private val telemetry = conn.connection.getSFBaseSession.getTelemetryClient
 
   private def send(telemetryType: String, data: JsonNode): Unit = {
     val msg = MAPPER.createObjectNode()
@@ -25,9 +35,10 @@ final class Telemetry(conn: ServerConnection) extends Logging {
       msg.put(CLIENT_LANGUAGE, JAVA)
     }
     try {
-      telemetry.addLogToBatch(TelemetryUtil.buildJobData(msg))
+      // submitTelemetry() is the stable SnowflakeConnection public-interface seam.
+      // It is a no-op for stored-procedure connections (NoOpTelemetryClient on the server side).
+      conn.sfConn.submitTelemetry(msg.toString)
       logDebug(s"sending telemetry data: ${data.toString}")
-      telemetry.sendBatchAsync()
     } catch {
       case e: Exception =>
         logError(s"Failed to send telemetry data: ${data.toString}, Error: ${e.getMessage}")

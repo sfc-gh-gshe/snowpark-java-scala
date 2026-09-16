@@ -32,27 +32,52 @@ import net.snowflake.client.api.resultset.{
   SnowflakeResultSet,
   SnowflakeResultSetMetaData
 }
+import net.snowflake.client.api.connection.{
+  DownloadStreamConfig,
+  SnowflakeConnection,
+  UploadStreamConfig
+}
 import net.snowflake.client.api.statement.{SnowflakePreparedStatement, SnowflakeStatement}
-import net.snowflake.client.internal.api.implementation.connection.SnowflakeConnectionImpl
+
+// ── Internal-import audit ─────────────────────────────────────────────────────────────────────
+// All net.snowflake.client.internal.* and net.snowflake.client.jdbc.internal.* imports below
+// are classified into three buckets:
+//
+//   CLIENT PATH ONLY   – only reachable during normal (non-stored-procedure) connection
+//                        creation.  Imports are scoped to createClientConnection() as local
+//                        imports so they are visually isolated from the sproc seam.
+//
+//   STRUCTURED-RESULT  – used in SnowflakeResultSetExt / result-set conversion for structured
+//                        types (ARRAY, OBJECT, MAP) and Arrow.  These are sproc-reachable when
+//                        a stored procedure executes queries that return structured types.
+//                        They are NOT part of the connection seam; removing them requires a
+//                        future public JDBC API for structured-type conversion.
+//
+//   GENERAL            – exception or utility classes used across both paths; not connection
+//                        seam types and safe to reference in the error-handling layer.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+
+// STRUCTURED-RESULT: SnowflakeBaseResultSet / FieldMetadataImpl used in SnowflakeResultSetExt
 import net.snowflake.client.internal.api.implementation.resultset.{
   FieldMetadataImpl,
   SnowflakeBaseResultSet
 }
+// STRUCTURED-RESULT / ARROW: used in convertToSnowparkValue for structured-type queries
 import net.snowflake.client.internal.core.{
   ArrowSqlInput,
   ColumnTypeHelper,
   SFArrowResultSet,
   SFBaseResultSet
 }
-import net.snowflake.client.internal.core.arrow.StructObjectWrapper
-import net.snowflake.client.api.connection.{DownloadStreamConfig, UploadStreamConfig}
+import net.snowflake.client.internal.core.arrow.StructObjectWrapper // STRUCTURED-RESULT / ARROW
 import net.snowflake.client.internal.jdbc.{
-  SnowflakeConnectString,
-  SnowflakeReauthenticationRequest,
-  SnowflakeResultSetV1,
-  SnowflakeUtil
+  // SnowflakeConnectString — CLIENT PATH ONLY; local-imported inside createClientConnection()
+  SnowflakeReauthenticationRequest, // GENERAL: session-expiry exception, both paths
+  SnowflakeResultSetV1, // STRUCTURED-RESULT: result set type used in SnowflakeResultSetExt
+  SnowflakeUtil // STRUCTURED-RESULT: exception mapping in SnowflakeResultSetExt
 }
 import com.snowflake.snowpark.types._
+// STRUCTURED-RESULT / ARROW (shaded): Arrow structured array/map unwrapping
 import net.snowflake.client.jdbc.internal.apache.arrow.vector.util.{
   JsonStringArrayList,
   JsonStringHashMap
@@ -223,12 +248,26 @@ private[snowpark] object ServerConnection {
 }
 /*
  * A JDBC connection is created automatically with the options Map,
- *  or, alternatively, a JDBC Connection can be passed in jdbcConn
+ *  or, alternatively, a JDBC Connection can be passed in jdbcConn.
+ *
+ * Connection seam design (JDBC 4.x POC):
+ *   SPROC PATH  – jdbcConn is provided by the JNI caller typed as java.sql.Connection.
+ *                 No concrete JDBC implementation class is referenced here.
+ *   CLIENT PATH – createClientConnection() constructs the connection via
+ *                 SnowparkSFConnectionHandler to inject the Snowpark app-id.
+ *                 SnowflakeConnectionImpl (internal) is used only inside that
+ *                 private helper; it is not reachable from the stored-procedure seam.
+ *
+ * Two connection references are maintained after construction:
+ *   connection – java.sql.Connection for standard JDBC ops (prepareStatement, etc.)
+ *   sfConn     – SnowflakeConnection (public interface), unwrapped once at the boundary,
+ *                for all Snowflake-specific ops (getDatabase, getQueryStatus,
+ *                getSessionParameter, submitTelemetry, uploadStream, downloadStream, …).
  */
 private[snowpark] class ServerConnection(
     options: Map[String, String],
     val isScalaAPI: Boolean,
-    private val jdbcConn: Option[SnowflakeConnectionImpl])
+    private val jdbcConn: Option[java.sql.Connection])
     extends Logging {
 
   val isStoredProc = jdbcConn.isDefined
@@ -239,7 +278,22 @@ private[snowpark] class ServerConnection(
     // scalastyle:on
   }
 
-  val connection: SnowflakeConnectionImpl = jdbcConn.getOrElse {
+  // PRIMARY connection handle — java.sql.Connection for standard JDBC operations.
+  val connection: java.sql.Connection = jdbcConn.getOrElse(createClientConnection())
+
+  // Stable SnowflakeConnection interface — unwrapped from `connection` exactly once at the
+  // seam boundary. Use for all Snowflake-specific operations.
+  val sfConn: SnowflakeConnection =
+    connection.unwrap(classOf[SnowflakeConnection])
+
+  // CLIENT PATH ONLY — not reachable from the stored-procedure JNI seam.
+  // SnowflakeConnectionImpl (internal) and SnowflakeConnectString (internal) are
+  // referenced here solely to inject the Snowpark app-id via SnowparkSFConnectionHandler.
+  // The result is returned as java.sql.Connection so that no other Snowpark code
+  // references the implementation class.
+  private def createClientConnection(): java.sql.Connection = {
+    import net.snowflake.client.internal.api.implementation.connection.SnowflakeConnectionImpl
+    import net.snowflake.client.internal.jdbc.SnowflakeConnectString
     val connURL = ServerConnection.connectionString(lowerCaseParameters)
     val connParam = ParameterUtils.jdbcConfig(lowerCaseParameters, isScalaAPI)
     val connStr = SnowflakeConnectString.parse(connURL, connParam)
@@ -319,7 +373,7 @@ private[snowpark] class ServerConnection(
   lazy private[snowpark] val telemetry: Telemetry = withValidConnection { new Telemetry(this) }
 
   def getJDBCSessionID: String = withValidConnection {
-    connection.getSessionID
+    sfConn.getSessionID()
   }
 
   private[snowpark] def getStringDatum(query: String): String = withValidConnection {
@@ -442,7 +496,7 @@ private[snowpark] class ServerConnection(
       inputStream: InputStream,
       destFileName: String,
       compressData: Boolean): Unit = withValidConnection {
-    connection.uploadStream(
+    sfConn.uploadStream(
       stageName,
       destFileName,
       inputStream,
@@ -455,7 +509,7 @@ private[snowpark] class ServerConnection(
 
   def downloadStream(stageName: String, sourceFileName: String, decompress: Boolean): InputStream =
     withValidConnection {
-      connection.downloadStream(
+      sfConn.downloadStream(
         stageName,
         sourceFileName,
         DownloadStreamConfig.builder().setDecompress(decompress).build())
@@ -672,30 +726,32 @@ private[snowpark] class ServerConnection(
   // to quote the name because JDBC may return the name without quotation,
   // the letter's case needs to be respected.
   def getCurrentDatabase: Option[String] = withValidConnection {
-    val databaseName = if (Utils.isStringEmpty(connection.getSFBaseSession.getDatabase)) {
+    // sfConn.getDatabase() reads from the SnowflakeConnection public interface (session state).
+    val databaseName = if (Utils.isStringEmpty(sfConn.getDatabase())) {
       val currentDatabaseName = getStringDatum("SELECT CURRENT_DATABASE()")
       if (Utils.isStringEmpty(currentDatabaseName)) {
         throw ErrorMessage.MISC_CANNOT_FIND_CURRENT_DB_OR_SCHEMA("DB", "DB", "DB")
       }
       currentDatabaseName
     } else {
-      connection.getSFBaseSession.getDatabase
+      sfConn.getDatabase()
     }
 
     Option(databaseName).map(analyzer.quoteNameWithoutUpperCasing)
   }
 
   def getCurrentSchema: Option[String] = withValidConnection {
-    val schemaName = if (Utils.isStringEmpty(connection.getSFBaseSession.getSchema)) {
+    // connection.getSchema() is the standard JDBC 4.1 equivalent of getSFBaseSession.getSchema.
+    val databaseName = if (Utils.isStringEmpty(connection.getSchema)) {
       val currentSchema = getStringDatum("SELECT CURRENT_SCHEMA()")
       if (Utils.isStringEmpty(currentSchema)) {
         throw ErrorMessage.MISC_CANNOT_FIND_CURRENT_DB_OR_SCHEMA("SCHEMA", "SCHEMA", "SCHEMA")
       }
       currentSchema
     } else {
-      connection.getSFBaseSession.getSchema
+      connection.getSchema
     }
-    Option(schemaName).map(analyzer.quoteNameWithoutUpperCasing)
+    Option(databaseName).map(analyzer.quoteNameWithoutUpperCasing)
   }
 
   lazy val isLazyAnalysis: Boolean = if (isStoredProc) {
@@ -925,7 +981,7 @@ private[snowpark] class ServerConnection(
     }
 
   private[snowpark] def isDone(queryID: String): Boolean =
-    !connection.getSFBaseSession.getQueryStatus(queryID).isStillRunning
+    !sfConn.getQueryStatus(queryID).isStillRunning
 
   private[snowpark] def waitForQueryDone(
       queryID: String,
@@ -936,8 +992,9 @@ private[snowpark] class ServerConnection(
     val retryPattern = Array(1, 1, 2, 3, 4, 8, 10)
     def getSeepTime(retry: Int) = retryPattern(retry.min(retryPattern.length - 1)) * 500
 
-    val session = connection.getSFBaseSession
-    var qs = session.getQueryStatus(queryID)
+    // sfConn.getQueryStatus() replaces getSFBaseSession.getQueryStatus() via the stable
+    // SnowflakeConnection public interface.
+    var qs = sfConn.getQueryStatus(queryID)
     var retry = 0
     var lastLogTime = 0
     var totalWaitTime = 0
@@ -945,7 +1002,7 @@ private[snowpark] class ServerConnection(
       totalWaitTime + getSeepTime(retry + 1) < maxWaitTimeInSeconds * 1000) {
       Thread.sleep(getSeepTime(retry))
       totalWaitTime = totalWaitTime + getSeepTime(retry)
-      qs = session.getQueryStatus(queryID)
+      qs = sfConn.getQueryStatus(queryID)
       retry = retry + 1
       if (totalWaitTime - lastLogTime > 60 * 1000 || lastLogTime == 0) {
         logWarning(
@@ -972,7 +1029,7 @@ private[snowpark] class ServerConnection(
         try {
           // Wait for the query done.
           waitForQueryDone(queryID, maxWaitTimeInSecond)
-          val queryIDs = connection.getChildQueryIds(queryID)
+          val queryIDs = sfConn.getChildQueryIds(queryID)
           val lastQueryId = queryIDs.last
           statement.executeQuery(Query.resultScanQuery(lastQueryId).sql)
           val placeholders = mutable.HashMap.empty[String, String]
@@ -989,7 +1046,7 @@ private[snowpark] class ServerConnection(
     }
 
   // There are three ways to get a parameter and this function will perform these in order:
-  // 1. Try to read from JDBC.getOtherParameter
+  // 1. Try to read from sfConn.getSessionParameter (replaces getSFBaseSession.getOtherParameter)
   // 2. If no result and if skipActiveRead == false, try to issue a `show parameters like ...`
   //    to read the value
   // 3. If skipActiveRead == true or the active read failed, try to return the provided
@@ -998,12 +1055,17 @@ private[snowpark] class ServerConnection(
       parameterName: String,
       skipActiveRead: Boolean = false,
       defaultValue: Option[String] = None): String = withValidConnection {
-    // Step 1:
-    val param = connection.getSFBaseSession.getOtherParameter(parameterName.toUpperCase())
-    var result: String = null
-    if (param != null) {
-      result = param.toString
-    } else if (!skipActiveRead) {
+    // Step 1: read from the stable SnowflakeConnection.getSessionParameter interface.
+    // Falls back to null (triggering Step 2) if the implementation does not yet support the API
+    // (e.g. third-party or mock connection that has not overridden the default method).
+    val result1: String =
+      try {
+        sfConn.getSessionParameter(parameterName.toUpperCase())
+      } catch {
+        case _: java.sql.SQLFeatureNotSupportedException => null
+      }
+    var result: String = result1
+    if (result == null && !skipActiveRead) {
       // Step 2:
       // This rarely happens and usually indicates bug during parameter reading, so logging an info.
       // Most parameter reading should be done in Session.getOtherParameter

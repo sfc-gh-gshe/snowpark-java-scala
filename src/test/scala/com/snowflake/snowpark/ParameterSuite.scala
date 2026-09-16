@@ -1,6 +1,7 @@
 package com.snowflake.snowpark
 
 import com.snowflake.snowpark.internal.{ParameterUtils, ServerConnection}
+import net.snowflake.client.internal.api.implementation.connection.SnowflakeConnectionImpl
 import net.snowflake.client.internal.core.SFSessionProperty
 
 import java.security.KeyPairGenerator
@@ -30,8 +31,12 @@ class ParameterSuite extends SNTestBase {
         .config(application, applicationName)
         .create
 
+    // connection is now java.sql.Connection; unwrap to impl for this non-sproc integration test
     assert(
-      sessionWithApplicationName.conn.connection.getSFBaseSession.getConnectionPropertiesMap
+      sessionWithApplicationName.conn.connection
+        .unwrap(classOf[SnowflakeConnectionImpl])
+        .getSFBaseSession
+        .getConnectionPropertiesMap
         .get(SFSessionProperty.APPLICATION) == applicationName)
   }
 
