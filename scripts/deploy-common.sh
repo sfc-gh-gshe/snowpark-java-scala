@@ -162,3 +162,59 @@ else
 
   echo "[SUCCESS] Published Snowpark Java-Scala $github_version_tag artifacts to S3."
 fi
+
+# ── Phase-2 adapter upload (optional) ──────────────────────────────────────────
+# When ADAPTER_JAR_PATH is set the script also publishes the pre-built JDBC
+# stored-procedure adapter JAR to the sfc-eng-jenkins S3 path consumed by
+# jdbc_adapter_s3_mirror.sh in the Anaconda RPM build.
+#
+# Required env vars:
+#   ADAPTER_JAR_PATH         – local path to the adapter deploy JAR
+#                              (e.g. output of the ExecPlatform Bazel build)
+#   ARTIFACT_MANIFEST_PATH   – local path to the artifact.manifest sidecar
+#                              (default: poc-artifacts/artifact.manifest)
+#
+# The script:
+#   1. Reads ADAPTER_GAV from the manifest to determine the adapter version.
+#   2. Computes SHA-256 of the adapter JAR.
+#   3. Uploads JAR + sha256 + manifest to
+#        s3://sfc-eng-jenkins/anaconda/jdbc-stored-proc-jdbc4-adapter/<version>/
+#      where jdbc_adapter_s3_mirror.sh will find them during the RPM build.
+if [[ -n "${ADAPTER_JAR_PATH:-}" ]]; then
+  MANIFEST_PATH="${ARTIFACT_MANIFEST_PATH:-poc-artifacts/artifact.manifest}"
+
+  if [[ ! -f "${ADAPTER_JAR_PATH}" ]]; then
+    echo "[ERROR] ADAPTER_JAR_PATH='${ADAPTER_JAR_PATH}' does not exist."
+    exit 1
+  fi
+  if [[ ! -f "${MANIFEST_PATH}" ]]; then
+    echo "[ERROR] ARTIFACT_MANIFEST_PATH='${MANIFEST_PATH}' does not exist."
+    exit 1
+  fi
+
+  # Extract adapter version from ADAPTER_GAV, e.g.
+  # ADAPTER_GAV=com.snowflake:jdbc-stored-proc-jdbc4-adapter:1.0.0
+  #                                                            ↑ field 3
+  ADAPTER_VERSION=$(grep '^ADAPTER_GAV=' "${MANIFEST_PATH}" | head -1 | cut -d: -f3)
+  if [[ -z "${ADAPTER_VERSION}" ]]; then
+    echo "[ERROR] Could not parse ADAPTER_GAV from ${MANIFEST_PATH}."
+    exit 1
+  fi
+  echo "[INFO] Adapter version: ${ADAPTER_VERSION}"
+
+  ADAPTER_ID="jdbc-stored-proc-jdbc4-adapter"
+  ADAPTER_JAR_NAME="${ADAPTER_ID}-${ADAPTER_VERSION}-with-dependencies.jar"
+  ADAPTER_SHA_NAME="${ADAPTER_JAR_NAME}.sha256"
+
+  # Compute SHA-256 (truncate to bare hex; strip filename suffix from sha256sum output).
+  sha256sum "${ADAPTER_JAR_PATH}" | awk '{printf "%s", $1}' > "/tmp/${ADAPTER_SHA_NAME}"
+
+  ADAPTER_S3_BASE="s3://sfc-eng-jenkins/anaconda/${ADAPTER_ID}/${ADAPTER_VERSION}"
+  echo "[INFO] Uploading adapter artifacts to ${ADAPTER_S3_BASE}/"
+  aws s3 cp "${ADAPTER_JAR_PATH}"           "${ADAPTER_S3_BASE}/${ADAPTER_JAR_NAME}"
+  aws s3 cp "/tmp/${ADAPTER_SHA_NAME}"      "${ADAPTER_S3_BASE}/${ADAPTER_SHA_NAME}"
+  aws s3 cp "${MANIFEST_PATH}"              "${ADAPTER_S3_BASE}/artifact.manifest"
+  echo "[SUCCESS] Uploaded adapter ${ADAPTER_VERSION} and artifact.manifest to S3."
+else
+  echo "[INFO] ADAPTER_JAR_PATH not set; skipping adapter upload."
+fi
