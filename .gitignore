@@ -25,3 +25,7 @@ project/target/
 poc-artifacts/*.jar
 # Generated runtime sidecar; publish with the artifact rather than source control.
 poc-artifacts/artifact.manifest
+
+# Python bytecode cache from running scripts/*.py and their unit tests.
+__pycache__/
+*.pyc
