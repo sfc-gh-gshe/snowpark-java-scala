@@ -166,19 +166,13 @@ fi
 # NOTE: This script publishes ONLY the Snowpark Java/Scala release itself
 # (Maven Central or the sfc-eng-jenkins/sfc-eng-data S3 layout above). It
 # does not publish, and must never publish, the JDBC stored-procedure
-# adapter JAR. `Python/anaconda_mirror/publish_jdbc_compatibility_set.sh`
-# in the `snowflake` repo is the sole producer of the adapter JAR (plus its
-# sha256 sidecar, the signed compatibility set, its signature, and
-# artifact.manifest) at
-# s3://sfc-eng-jenkins/anaconda/jdbc-stored-proc-jdbc4-adapter/<version>/,
-# which `jdbc_adapter_s3_mirror.sh` downloads from during the Anaconda RPM
-# build. A second producer writing to that same prefix from this script was
-# a real double-producer risk and has been removed; see the "Detailed
-# Design for Using an Exact JDBC Runtime in Java Stored Procedures", Part 2
-# "Publish an exact runtime contract".
+# adapter JAR. Adapter publication is handled separately by adapter build CI
+# in the snowflake repo (ExecPlatform/src/coprocessor/java/libraries/
+# jdbc-stored-proc-jdbc4-adapter), which is the sole producer of the adapter
+# JAR, .sha256 sidecar, and artifact.manifest at the adapter-version S3 prefix.
 if [[ -n "${ADAPTER_JAR_PATH:-}" || -n "${ARTIFACT_MANIFEST_PATH:-}" || -n "${JDBC_COMPATIBILITY_SET_PATH:-}" || -n "${JDBC_COMPATIBILITY_SET_SHA256:-}" ]]; then
   echo "[ERROR] ADAPTER_JAR_PATH/ARTIFACT_MANIFEST_PATH/JDBC_COMPATIBILITY_SET_PATH/JDBC_COMPATIBILITY_SET_SHA256 are no longer supported by this script."
   echo "[ERROR] The Snowpark release pipeline does not publish the JDBC stored-procedure adapter JAR."
-  echo "[ERROR] Adapter publication is owned exclusively by publish_jdbc_compatibility_set.sh (snowflake repo, Python/anaconda_mirror/), which takes JDBC_COMPATIBILITY_ADAPTER_ARTIFACT."
+  echo "[ERROR] Adapter publication is owned exclusively by adapter build CI in the snowflake repo."
   exit 1
 fi
