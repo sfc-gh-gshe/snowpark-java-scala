@@ -23,7 +23,7 @@ import net.snowflake.client.api.connection.SnowflakeConnection
  * <h3>API boundary</h3> <p>The public method [[fromJdbcConnection]] accepts only
  * [[java.sql.Connection]] so that the JNI descriptor visible to {@code JavaMethodExecutor.cpp} does
  * not reference any JDBC class. The connection must be created via
- * [[net.snowflake.client.internal.jdbc.sproc.StoredProcConnectionFactory.fromHandler]].
+ * {@code net.snowflake.client.internal.jdbc.sproc.StoredProcConnectionFactory.fromHandler}.
  *
  * @since 1.22.0-SNAPSHOT
  *   (POC, JDBC 4.x artifact)
@@ -44,7 +44,7 @@ private[snowpark] object StoredProcSessionFactory {
    *
    * @param conn
    *   Non-null [[java.sql.Connection]] from
-   *   [[net.snowflake.client.internal.jdbc.sproc.StoredProcConnectionFactory.fromHandler]].
+   *   {@code net.snowflake.client.internal.jdbc.sproc.StoredProcConnectionFactory.fromHandler}.
    * @return
    *   A fully initialised stored-procedure [[Session]].
    * @throws IllegalArgumentException
