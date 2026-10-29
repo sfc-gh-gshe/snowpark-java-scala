@@ -37,6 +37,13 @@ val jdbc4VersionOverride: Option[String] = sys.props.get("sproc.jdbc4.version")
 // here.
 val jdbc4Version: String = jdbc4VersionOverride.getOrElse("4.4.0")
 
+// Compile-only dependency on the stored-procedure runtime contract. The server supplies the single
+// runtime copy, so it must not be bundled. -Dsproc.runtime.api.version selects a locally
+// installed build, resolved from the local Maven repository.
+// TODO: Replace the placeholder coordinate once the contract's publication is decided.
+val sprocRuntimeApiVersion: String =
+  sys.props.getOrElse("sproc.runtime.api.version", "0.1.0-SNAPSHOT")
+
 // Allow the synthetic Snowpark version to be overridden by -Dsproc.snowpark.version.
 lazy val snowparkVersion: String = sys.props.getOrElse("sproc.snowpark.version", "1.22.0-SNAPSHOT")
 
@@ -134,6 +141,7 @@ lazy val root: Project = (project in file("."))
     crossScalaVersions := Seq("2.12.20", "2.13.16"),
     // Compile to Java 8 bytecode so published artifacts run on JDK 8 through 21+.
     javacOptions ++= Seq("-source", "1.8", "-target", "1.8"),
+    resolvers += Resolver.mavenLocal,
     libraryDependencies ++= Seq(
       "com.fasterxml.jackson.core" % "jackson-databind" % jacksonVersion,
       "com.fasterxml.jackson.core" % "jackson-core" % jacksonVersion,
@@ -145,6 +153,7 @@ lazy val root: Project = (project in file("."))
       "io.opentelemetry" % "opentelemetry-api" % openTelemetryVersion,
       "javax.xml.bind" % "jaxb-api" % "2.3.1",
       "net.snowflake" % jdbcName % jdbcVersion,
+      "com.snowflake" % "stored-proc-runtime-api" % sprocRuntimeApiVersion % Provided,
       "org.scala-lang" % "scala-library" % scalaVersion.value,
       "org.scala-lang" % "scala-compiler" % scalaVersion.value,
       "org.slf4j" % "slf4j-api" % slf4jVersion,
@@ -215,6 +224,8 @@ lazy val root: Project = (project in file("."))
     assembly / assemblyJarName :=
       s"${snowparkName}_${scalaVersion.value.split("\\.").take(2).mkString(".")}-$snowparkVersion-with-dependencies.jar",
     assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "services", "com.snowflake.sproc.api.StoredProcSessionFactory") =>
+        MergeStrategy.first
       case PathList("META-INF", xs @ _*) => MergeStrategy.discard
       case _ => MergeStrategy.preferProject
     },
@@ -239,6 +250,8 @@ lazy val root: Project = (project in file("."))
       s"${snowparkName}_${scalaBin}-${snowparkVersion}-tests-with-dependencies.jar"
     },
     Test / assembly / assemblyMergeStrategy := {
+      case PathList("META-INF", "services", "com.snowflake.sproc.api.StoredProcSessionFactory") =>
+        MergeStrategy.first
       case PathList("META-INF", xs @ _*) => MergeStrategy.discard
       case _ => MergeStrategy.preferProject
     },
@@ -251,7 +264,11 @@ lazy val root: Project = (project in file("."))
     Test / assemblyPackageScala / assembleArtifact := scalaBinaryVersion.value == "2.12",
     Test / assembly / assemblyExcludedJars := {
       val cp = (Test / assembly / fullClasspath).value
-      val baseExcluded = cp filter { _.data.getName == s"$jdbcName-$jdbcVersion.jar" }
+      val baseExcluded = cp filter { att =>
+        Set(
+          s"$jdbcName-$jdbcVersion.jar",
+          s"stored-proc-runtime-api-$sprocRuntimeApiVersion.jar").contains(att.data.getName)
+      }
       val scalaCoreExcluded =
         if (scalaBinaryVersion.value == "2.12") {
           val scalaV = scalaVersion.value
